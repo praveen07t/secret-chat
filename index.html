@@ -23,6 +23,10 @@ button{padding:0 18px;border:0;border-radius:14px;background:var(--fg);color:var
 .m{max-width:78%;padding:9px 13px;border-radius:16px;background:var(--them);word-wrap:break-word;white-space:pre-wrap}
 .m.me{align-self:flex-end;background:var(--me);color:var(--meT)}
 #send{padding:12px;border-top:1px solid var(--line)}
+.m small{display:block;font-size:11px;opacity:.6;margin-top:3px;text-align:right}
+.day{align-self:center;font-size:12px;color:var(--mute);margin:10px 0 4px}
+.x{display:none;margin-top:4px;font-size:12px;text-align:right;text-decoration:underline;cursor:pointer}
+.m.open .x{display:block}
 </style>
 </head>
 <body>
@@ -120,12 +124,37 @@ function openChat() {
     const items = [];
     for (const d of snap.docs) {
       const x = d.data(), txt = await decrypt(x.c);
-      if (txt !== null) items.push([x.u === me, txt]);
+      if (txt !== null) items.push({ mine: x.u === me, txt, t: x.t, id: d.id });
     }
     box.innerHTML = '';
-    for (const [mine, txt] of items) {
+    const dayLabel = t => {
+      const d = new Date(t), n = new Date(), y = new Date(Date.now() - 864e5);
+      if (d.toDateString() === n.toDateString()) return 'Aaj';
+      if (d.toDateString() === y.toDateString()) return 'Kal';
+      return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+    };
+    let last = '';
+    for (const m of items) {
+      const dl = new Date(m.t).toDateString();
+      if (dl !== last) {
+        last = dl;
+        const h = document.createElement('div'); h.className = 'day'; h.textContent = dayLabel(m.t); box.appendChild(h);
+      }
       const el = document.createElement('div');
-      el.className = 'm' + (mine ? ' me' : ''); el.textContent = txt; box.appendChild(el);
+      el.className = 'm' + (m.mine ? ' me' : '');
+      const tx = document.createElement('div'); tx.textContent = m.txt; el.appendChild(tx);
+      const tm = document.createElement('small');
+      tm.textContent = new Date(m.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); el.appendChild(tm);
+      if (m.mine) {
+        const x = document.createElement('div'); x.className = 'x'; x.textContent = 'Message delete karo';
+        x.onclick = async ev => {
+          ev.stopPropagation();
+          if (confirm('Ye message delete karna hai?')) { try { await deleteDoc(doc(db, 'chats', chatId, 'msgs', m.id)); } catch (e) {} }
+        };
+        el.appendChild(x);
+        el.onclick = () => el.classList.toggle('open');
+      }
+      box.appendChild(el);
     }
     box.scrollTop = box.scrollHeight;
   });
