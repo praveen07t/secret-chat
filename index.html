@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Secret Chat</title>
+<style>
+:root{--bg:#fafafa;--fg:#111;--mute:#888;--line:#e4e4e4;--me:#111;--meT:#fff;--them:#eee}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0d0d;--fg:#f2f2f2;--mute:#777;--line:#2a2a2a;--me:#f2f2f2;--meT:#111;--them:#222}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif}
+#app{height:100%;display:flex;flex-direction:column;max-width:560px;margin:0 auto;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+#gate{flex:1;display:flex;flex-direction:column;justify-content:center;padding:24px;gap:12px}
+#gate p{color:var(--mute);font-size:14px;margin:0;min-height:20px;text-align:center}
+.row{display:flex;gap:8px}
+input{flex:1;min-width:0;padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:transparent;color:var(--fg);font:inherit;outline:none}
+input:focus{border-color:var(--fg)}
+button{padding:0 18px;border:0;border-radius:14px;background:var(--fg);color:var(--bg);font:inherit;cursor:pointer}
+#chat{display:none;flex:1;flex-direction:column;min-height:0}
+#top{display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);font-size:13px;color:var(--mute)}
+#top span{cursor:pointer}
+#msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:6px}
+.m{max-width:78%;padding:9px 13px;border-radius:16px;background:var(--them);word-wrap:break-word;white-space:pre-wrap}
+.m.me{align-self:flex-end;background:var(--me);color:var(--meT)}
+#send{padding:12px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="gate">
+    <div class="row"><input id="code" type="password" placeholder="Secret code" autocomplete="off"><button id="go">→</button></div>
+    <div class="row" id="confirmRow" style="display:none"><input id="code2" type="password" placeholder="Code dubara daalo (naya chat)" autocomplete="off"><button id="go2">✓</button></div>
+    <p id="hint"></p>
+  </div>
+  <div id="chat">
+    <div id="top"><span id="leave">← bahar</span><span id="del">chat delete</span></div>
+    <div id="msgs"></div>
+    <div id="send" class="row"><input id="text" placeholder="Message" autocomplete="off"><button id="sendBtn">↑</button></div>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, addDoc, getDocs, query, orderBy, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCFrzn29FyE_oGNZLwcpjJeoa3S5oGmolE",
+  authDomain: "secret-chat-75691.firebaseapp.com",
+  projectId: "secret-chat-75691",
+  storageBucket: "secret-chat-75691.firebasestorage.app",
+  messagingSenderId: "965511693483",
+  appId: "1:965511693483:web:719ea5e3dfc71731e323ee"
+};
+const db = getFirestore(initializeApp(firebaseConfig));
+
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+let key = null, chatId = null, unsub = null;
+
+let me = null;
+try { me = localStorage.getItem('sc_me'); if (!me) { me = crypto.randomUUID(); localStorage.setItem('sc_me', me); } } catch (e) { me = crypto.randomUUID(); }
+
+const b64 = u => btoa(String.fromCharCode(...new Uint8Array(u)));
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function sha(s) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)))].map(x => x.toString(16).padStart(2, '0')).join(''); }
+async function deriveKey(code) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(code), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: enc.encode('secretchat-key-v1'), iterations: 150000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function encrypt(t) { const iv = crypto.getRandomValues(new Uint8Array(12)); const c = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(t)); return b64(iv) + '.' + b64(c); }
+async function decrypt(s) { try { const [i, c] = s.split('.'); return dec.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(i) }, key, unb64(c))); } catch (e) { return null; } }
+const hint = t => $('hint').textContent = t;
+
+async function enter(create) {
+  const code = $('code').value.trim();
+  if (code.length < 4) { hint('Code kam se kam 4 characters ka rakho.'); return; }
+  hint('Check ho raha hai…');
+  try {
+    const id = (await sha('id:' + code)).slice(0, 40);
+    const k = await deriveKey(code);
+    const ref = doc(db, 'chats', id);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      if (!create) {
+        $('confirmRow').style.display = 'flex';
+        hint('Ye code naya hai. Naya chat banane ke liye code dubara daalo.');
+        return;
+      }
+      if ($('code2').value.trim() !== code) { hint('Dono code match nahi hue.'); return; }
+      key = k;
+      await setDoc(ref, { check: await encrypt('ok'), created: Date.now() });
+    } else {
+      key = k;
+      if (await decrypt(snap.data().check) !== 'ok') { key = null; hint('Galat code.'); return; }
+    }
+    chatId = id; openChat();
+  } catch (e) { hint('Error: ' + (e.message || e)); }
+}
+
+function openChat() {
+  $('gate').style.display = 'none'; $('chat').style.display = 'flex';
+  $('code').value = ''; $('code2').value = ''; hint('');
+  const box = $('msgs'); box.innerHTML = '';
+  unsub = onSnapshot(query(collection(db, 'chats', chatId, 'msgs'), orderBy('t', 'asc')), async snap => {
+    const items = [];
+    for (const d of snap.docs) {
+      const x = d.data(), txt = await decrypt(x.c);
+      if (txt !== null) items.push([x.u === me, txt]);
+    }
+    box.innerHTML = '';
+    for (const [mine, txt] of items) {
+      const el = document.createElement('div');
+      el.className = 'm' + (mine ? ' me' : ''); el.textContent = txt; box.appendChild(el);
+    }
+    box.scrollTop = box.scrollHeight;
+  });
+  $('text').focus();
+}
+
+async function send() {
+  const t = $('text').value.trim(); if (!t) return;
+  $('text').value = '';
+  try { await addDoc(collection(db, 'chats', chatId, 'msgs'), { c: await encrypt(t), u: me, t: Date.now() }); }
+  catch (e) { $('text').value = t; }
+}
+
+function leave() {
+  if (unsub) unsub(); key = null; chatId = null;
+  $('chat').style.display = 'none'; $('gate').style.display = 'flex'; $('confirmRow').style.display = 'none';
+}
+
+async function delChat() {
+  if (!confirm('Poora chat sabke liye delete ho jayega. Pakka?')) return;
+  const id = chatId;
+  const s = await getDocs(collection(db, 'chats', id, 'msgs'));
+  for (const d of s.docs) await deleteDoc(d.ref);
+  await deleteDoc(doc(db, 'chats', id));
+  leave(); hint('Chat delete ho gaya.');
+}
+
+$('go').onclick = () => enter(false); $('go2').onclick = () => enter(true);
+$('code').onkeydown = e => { if (e.key === 'Enter') enter(false); };
+$('code2').onkeydown = e => { if (e.key === 'Enter') enter(true); };
+$('text').onkeydown = e => { if (e.key === 'Enter') send(); };
+$('sendBtn').onclick = send; $('leave').onclick = leave; $('del').onclick = delChat;
+</script>
+</body>
+</html>
