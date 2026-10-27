@@ -28,8 +28,9 @@ button{padding:0 18px;border:0;border-radius:14px;background:var(--fg);color:var
 <body>
 <div id="app">
   <div id="gate">
-    <div class="row"><input id="code" type="password" placeholder="Secret code" autocomplete="off"><button id="go">→</button></div>
-    <div class="row" id="confirmRow" style="display:none"><input id="code2" type="password" placeholder="Code dubara daalo (naya chat)" autocomplete="off"><button id="go2">✓</button></div>
+    <div class="row" id="s1"><input id="code" type="password" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="off"><button id="go">→</button></div>
+    <div class="row" id="s2" style="display:none"><input id="pin" type="password" placeholder="Secret PIN / jawab" autocomplete="off"><button id="go1">→</button></div>
+    <div class="row" id="confirmRow" style="display:none"><input id="pin2" type="password" placeholder="PIN dubara daalo (naya chat)" autocomplete="off"><button id="go2">✓</button></div>
     <p id="hint"></p>
   </div>
   <div id="chat">
@@ -71,27 +72,41 @@ async function encrypt(t) { const iv = crypto.getRandomValues(new Uint8Array(12)
 async function decrypt(s) { try { const [i, c] = s.split('.'); return dec.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(i) }, key, unb64(c))); } catch (e) { return null; } }
 const hint = t => $('hint').textContent = t;
 
+let step1Code = '';
+function showStep(n) {
+  $('s1').style.display = n === 1 ? 'flex' : 'none';
+  $('s2').style.display = n === 2 ? 'flex' : 'none';
+  $('confirmRow').style.display = 'none';
+  if (n === 1) { step1Code = ''; $('code').value = ''; $('pin').value = ''; $('pin2').value = ''; }
+  (n === 1 ? $('code') : $('pin')).focus();
+}
+function next() {
+  const c = $('code').value.trim();
+  if (!/^\d{6}$/.test(c)) { hint('Code exactly 6 digit ka hona chahiye.'); return; }
+  step1Code = c; hint('Ab apna secret PIN / jawab daalo.'); showStep(2);
+}
 async function enter(create) {
-  const code = $('code').value.trim();
-  if (code.length < 4) { hint('Code kam se kam 4 characters ka rakho.'); return; }
+  const pin = $('pin').value.trim();
+  if (pin.length < 4) { hint('PIN / jawab kam se kam 4 characters ka rakho.'); return; }
   hint('Check ho raha hai…');
   try {
-    const id = (await sha('id:' + code)).slice(0, 40);
-    const k = await deriveKey(code);
+    const secret = step1Code + '|' + pin;
+    const id = (await sha('id:' + secret)).slice(0, 40);
+    const k = await deriveKey(secret);
     const ref = doc(db, 'chats', id);
     const snap = await getDoc(ref);
     if (!snap.exists()) {
       if (!create) {
         $('confirmRow').style.display = 'flex';
-        hint('Ye code naya hai. Naya chat banane ke liye code dubara daalo.');
+        hint('Ye combination naya hai. Chat pehle bana tha to code ya PIN galat hai. Naya banana ho to PIN dubara daalo.');
         return;
       }
-      if ($('code2').value.trim() !== code) { hint('Dono code match nahi hue.'); return; }
+      if ($('pin2').value.trim() !== pin) { hint('Dono PIN match nahi hue.'); return; }
       key = k;
       await setDoc(ref, { check: await encrypt('ok'), created: Date.now() });
     } else {
       key = k;
-      if (await decrypt(snap.data().check) !== 'ok') { key = null; hint('Galat code.'); return; }
+      if (await decrypt(snap.data().check) !== 'ok') { key = null; hint('Galat code ya PIN.'); return; }
     }
     chatId = id; openChat();
   } catch (e) { hint('Error: ' + (e.message || e)); }
@@ -99,7 +114,7 @@ async function enter(create) {
 
 function openChat() {
   $('gate').style.display = 'none'; $('chat').style.display = 'flex';
-  $('code').value = ''; $('code2').value = ''; hint('');
+  $('code').value = ''; $('pin').value = ''; $('pin2').value = ''; step1Code = ''; hint('');
   const box = $('msgs'); box.innerHTML = '';
   unsub = onSnapshot(query(collection(db, 'chats', chatId, 'msgs'), orderBy('t', 'asc')), async snap => {
     const items = [];
@@ -126,7 +141,7 @@ async function send() {
 
 function leave() {
   if (unsub) unsub(); key = null; chatId = null;
-  $('chat').style.display = 'none'; $('gate').style.display = 'flex'; $('confirmRow').style.display = 'none';
+  $('chat').style.display = 'none'; $('gate').style.display = 'flex'; showStep(1); hint('');
 }
 
 async function delChat() {
@@ -138,9 +153,11 @@ async function delChat() {
   leave(); hint('Chat delete ho gaya.');
 }
 
-$('go').onclick = () => enter(false); $('go2').onclick = () => enter(true);
-$('code').onkeydown = e => { if (e.key === 'Enter') enter(false); };
-$('code2').onkeydown = e => { if (e.key === 'Enter') enter(true); };
+$('go').onclick = next; $('go1').onclick = () => enter(false); $('go2').onclick = () => enter(true);
+$('code').onkeydown = e => { if (e.key === 'Enter') next(); };
+$('pin').onkeydown = e => { if (e.key === 'Enter') enter(false); };
+$('pin2').onkeydown = e => { if (e.key === 'Enter') enter(true); };
+$('code').oninput = e => { e.target.value = e.target.value.replace(/\D/g, ''); };
 $('text').onkeydown = e => { if (e.key === 'Enter') send(); };
 $('sendBtn').onclick = send; $('leave').onclick = leave; $('del').onclick = delChat;
 </script>
